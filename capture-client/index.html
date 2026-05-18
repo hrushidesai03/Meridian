@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Meridian Capture</title>
+  <style>
+    body { font-family: sans-serif; background: #0a0a0a; color: white; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+    .card { background: #111; border: 1px solid #222; border-radius: 16px; padding: 2rem; width: 420px; }
+    h1 { font-size: 20px; margin-bottom: 6px; }
+    .sub { color: #666; font-size: 13px; margin-bottom: 24px; }
+    label { font-size: 12px; color: #aaa; display: block; margin-bottom: 6px; }
+    input, select { width: 100%; background: #1a1a1a; border: 1px solid #333; border-radius: 8px; color: white; font-size: 13px; padding: 10px 12px; margin-bottom: 14px; outline: none; box-sizing: border-box; }
+    button { width: 100%; padding: 12px; border-radius: 10px; border: none; font-size: 14px; font-weight: 600; cursor: pointer; margin-bottom: 10px; }
+    .btn-start { background: #2563eb; color: white; }
+    .btn-start:disabled { background: #1e3a6e; color: #555; cursor: not-allowed; }
+    .btn-stop { background: #dc2626; color: white; display: none; }
+    .status-box { background: #1a1a1a; border-radius: 10px; padding: 14px; margin-top: 16px; font-size: 12px; }
+    .row { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid #222; }
+    .row:last-child { border: none; }
+    .live { color: #22c55e; }
+    .idle { color: #666; }
+    .log { margin-top: 14px; background: #0d0d0d; border-radius: 8px; padding: 10px; font-size: 11px; font-family: monospace; max-height: 150px; overflow-y: auto; }
+    .log-line { padding: 2px 0; }
+    .ok { color: #22c55e; }
+    .err { color: #ef4444; }
+    .info { color: #60a5fa; }
+  </style>
+</head>
+<body>
+<div class="card">
+  <h1>🎙️ Meridian Capture</h1>
+  <p class="sub">Real audio capture via VideoDB RTStream</p>
+
+  <label>User ID</label>
+  <input id="userId" value="user_001" />
+
+  <label>Session Type</label>
+  <select id="sessionType">
+    <option value="meeting">Meeting (extracts commitments)</option>
+    <option value="work">Work Session (detects drift)</option>
+  </select>
+
+  <label>Backend URL</label>
+  <input id="backendUrl" value="http://localhost:8000" />
+
+  <button class="btn-start" id="btnStart" onclick="startCapture()">▶ Start Capture Session</button>
+  <button class="btn-stop" id="btnStop" onclick="stopCapture()">■ Stop Session</button>
+  <button id="btnAnalyze" onclick="forceAnalyze()" style="width:100%;padding:10px;border-radius:10px;border:none;font-size:13px;font-weight:600;cursor:pointer;margin-bottom:10px;background:#7c3aed;color:white;display:none">
+    🔍 Force Screen Analysis Now
+  </button>
+
+  <div class="status-box">
+    <div class="row"><span>Status</span><span id="statusVal" class="idle">Idle</span></div>
+    <div class="row"><span>Session ID</span><span id="sessionVal">—</span></div>
+    <div class="row"><span>Mic Access</span><span id="micVal" class="idle">—</span></div>
+    <div class="row"><span>Duration</span><span id="durVal">0:00</span></div>
+  </div>
+
+  <div class="log" id="log"></div>
+</div>
+
+<script>
+  let stream = null;
+  let screenStream = null;
+  let mediaRecorder = null;
+  let sessionId = null;
+  let timerInterval = null;
+  let elapsed = 0;
+
+  function addLog(msg, type='info') {
+    const log = document.getElementById('log');
+    const line = document.createElement('div');
+    line.className = `log-line ${type}`;
+    line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+    log.appendChild(line);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function fmt(s) {
+    return `${Math.floor(s/60).toString().padStart(2,'0')}:${(s%60).toString().padStart(2,'0')}`;
+  }
+
+  async function startCapture() {
+    const userId = document.getElementById('userId').value;
+    const sessionType = document.getElementById('sessionType').value;
+    const backendUrl = document.getElementById('backendUrl').value;
+
+    document.getElementById('btnStart').disabled = true;
+
+    // For MEETING sessions: capture audio
+    if (sessionType === 'meeting') {
+      addLog('Requesting microphone...', 'info');
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        document.getElementById('micVal').textContent = '✅ Granted';
+        document.getElementById('micVal').className = 'live';
+        addLog('✅ Mic access granted', 'ok');
+      } catch(e) {
+        addLog(`❌ Mic denied: ${e.message}`, 'err');
+        document.getElementById('btnStart').disabled = false;
+        return;
+      }
+    } else {
+      // For WORK sessions: skip microphone
+      addLog('Work session: Skipping microphone', 'info');
+      document.getElementById('micVal').textContent = 'Skipped';
+      document.getElementById('micVal').className = 'idle';
+    }
+
+    // Step 2: Request screen capture (for work sessions)
+    if (sessionType === 'work') {
+      addLog('Requesting screen capture...', 'info');
+      try {
+        screenStream = await navigator.mediaDevices.getDisplayMedia({
+          video: { mediaSource: 'screen' },
+          audio: false
+        });
+        addLog('✅ Screen capture granted', 'ok');
+      } catch(e) {
+        addLog('⚠️ Screen capture denied — continuing without drift detection', 'err');
+      }
+    } else {
+      addLog('Meeting session: Skipping screen capture', 'info');
+    }
+
+    // Step 3: Create session
+    addLog('Creating session...', 'info');
+    try {
+      const resp = await fetch(`${backendUrl}/sessions/create`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_type: sessionType, end_user_id: userId })
+      });
+      const data = await resp.json();
+      sessionId = data.session_id || data.capture_session_id;
+      document.getElementById('sessionVal').textContent = sessionId.substring(0, 20) + '...';
+      addLog(`✅ Session: ${sessionId}`, 'ok');
+    } catch(e) {
+      addLog(`❌ Session failed: ${e.message}`, 'err');
+      if (stream) stream.getTracks().forEach(t => t.stop());
+      if (screenStream) screenStream.getTracks().forEach(t => t.stop());
+      document.getElementById('btnStart').disabled = false;
+      return;
+    }
+
+    // Step 4: Start UI
+    document.getElementById('statusVal').textContent = '🔴 Recording';
+    document.getElementById('statusVal').className = 'live';
+    document.getElementById('btnStart').style.display = 'none';
+    document.getElementById('btnStop').style.display = 'block';
+    document.getElementById('btnAnalyze').style.display = 'block';
+    elapsed = 0;
+    timerInterval = setInterval(() => {
+      elapsed++;
+      document.getElementById('durVal').textContent = fmt(elapsed);
+    }, 1000);
+
+    // Step 5: Continuous audio recording with periodic processing (ONLY for meetings)
+    if (sessionType === 'meeting' && stream) {
+      mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
+      let isProcessing = false;
+      let chunkBuffer = [];
+
+      mediaRecorder.ondataavailable = async (e) => {
+        if (e.data.size === 0) return;
+        
+        // Buffer chunks
+        chunkBuffer.push(e.data);
+        addLog(`📦 Audio chunk buffered (${chunkBuffer.length} chunks)`, 'info');
+        
+        // Send immediately if we have data
+        if (!isProcessing && chunkBuffer.length > 0) {
+          isProcessing = true;
+          const blob = new Blob(chunkBuffer, { type: 'audio/webm;codecs=opus' });
+          chunkBuffer = [];
+          
+          addLog(`📤 Sending audio chunk: ${blob.size} bytes`, 'info');
+          const formData = new FormData();
+          formData.append('audio', blob, 'chunk.webm');
+          formData.append('session_id', sessionId);
+          formData.append('end_user_id', userId);
+          formData.append('session_type', sessionType);
+          
+          try {
+            const resp = await fetch(`${backendUrl}/sessions/audio-chunk`, {
+              method: 'POST', body: formData
+            });
+            if (resp.ok) {
+              const data = await resp.json();
+              addLog(`✅ Chunk uploaded: ${data.transcribed ? 'transcribed' : 'no speech'}`, 'ok');
+              if (data.commitments_found > 0) {
+                addLog(`📌 ${data.commitments_found} commitment(s) found!`, 'ok');
+              }
+            } else {
+              const data = await resp.json().catch(() => ({}));
+              addLog(`⚠️ Upload status ${resp.status}: ${data.detail || resp.statusText}`, 'err');
+            }
+          } catch(e) { 
+            addLog(`❌ Upload error: ${e.message}`, 'err'); 
+          }
+          isProcessing = false;
+        }
+      };
+
+      mediaRecorder.onstop = async () => {
+        // Send any remaining buffered chunks
+        if (chunkBuffer.length > 0 && !isProcessing) {
+          isProcessing = true;
+          const blob = new Blob(chunkBuffer, { type: 'audio/webm;codecs=opus' });
+          chunkBuffer = [];
+          
+          addLog(`📤 Sending final audio chunk: ${blob.size} bytes`, 'info');
+          const formData = new FormData();
+          formData.append('audio', blob, 'chunk.webm');
+          formData.append('session_id', sessionId);
+          formData.append('end_user_id', userId);
+          formData.append('session_type', sessionType);
+          
+          try {
+            const resp = await fetch(`${backendUrl}/sessions/audio-chunk`, {
+              method: 'POST', body: formData
+            });
+            if (resp.ok) {
+              const data = await resp.json();
+              addLog(`✅ Final chunk uploaded`, 'ok');
+              if (data.commitments_found > 0) {
+                addLog(`📌 ${data.commitments_found} commitment(s) found!`, 'ok');
+              }
+            }
+          } catch(e) { 
+            addLog(`❌ Final upload error: ${e.message}`, 'err'); 
+          }
+        }
+      };
+
+      // Start recording with 10-second chunks (timeslice parameter auto-triggers ondataavailable)
+      mediaRecorder.start(10000);
+      addLog('🎤 Audio recording active — auto-chunks every 10s', 'info');
+    }
+
+    // Step 6: Screen capture for work sessions
+    if (sessionType === 'work' && screenStream) {
+      const videoTrack = screenStream.getVideoTracks()[0];
+      const imageCapture = new ImageCapture(videoTrack);
+      addLog('📸 Screen capture active — analyzing every 20s', 'info');
+
+      async function captureAndSendFrame() {
+        if (!screenStream || !screenStream.active) return;
+        try {
+          const bitmap = await imageCapture.grabFrame();
+          const canvas = document.createElement('canvas');
+          canvas.width = bitmap.width;
+          canvas.height = bitmap.height;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(bitmap, 0, 0);
+          
+          canvas.toBlob(async (blob) => {
+            const formData = new FormData();
+            formData.append('image', blob, 'screen.jpg');
+            formData.append('session_id', sessionId);
+            formData.append('end_user_id', userId);
+            formData.append('session_type', sessionType);
+            try {
+              const resp = await fetch(`${backendUrl}/sessions/screen-frame`, {
+                method: 'POST', body: formData
+              });
+              if (resp.ok) {
+                const data = await resp.json();
+                if (data.drift_detected) {
+                  addLog(`🚨 DRIFT DETECTED: ${data.drift_description}`, 'err');
+                } else {
+                  addLog(`📸 Screen analyzed`, 'info');
+                }
+              } else {
+                const data = await resp.json().catch(() => ({}));
+                addLog(`❌ Error: ${data.detail || resp.statusText}`, 'err');
+              }
+            } catch(e) { 
+              addLog(`❌ Error: ${e.message}`, 'err'); 
+            }
+          }, 'image/jpeg', 0.8);
+        } catch(e) { 
+          addLog(`Frame capture error: ${e.message}`, 'err'); 
+        }
+        setTimeout(captureAndSendFrame, 20000);
+      }
+      setTimeout(captureAndSendFrame, 20000);
+    }
+
+    // Final status
+    if (sessionType === 'meeting') {
+      addLog('🎤 Recording — speak now', 'ok');
+    } else {
+      addLog('🖥️ Work session started', 'ok');
+    }
+  }
+
+  function stopCapture() {
+    const sessionType = document.getElementById('sessionType').value;
+    
+    if (sessionType === 'meeting') {
+      addLog('📤 Flushing final audio chunk...', 'info');
+      // Request final data chunk from mediaRecorder
+      if (mediaRecorder && mediaRecorder.state === 'recording') {
+        mediaRecorder.requestData(); // Triggers ondataavailable
+        setTimeout(() => {
+          if (mediaRecorder) mediaRecorder.stop();
+          finishStopCapture();
+        }, 500);
+      } else {
+        finishStopCapture();
+      }
+    } else {
+      if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+        mediaRecorder.stop();
+      }
+      finishStopCapture();
+    }
+  }
+
+  function finishStopCapture() {
+    if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+    if (screenStream) { screenStream.getTracks().forEach(t => t.stop()); screenStream = null; }
+    if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+    if (mediaRecorder) { mediaRecorder = null; }
+
+    document.getElementById('statusVal').textContent = 'Stopped';
+    document.getElementById('statusVal').className = 'idle';
+    document.getElementById('btnStop').style.display = 'none';
+    document.getElementById('btnAnalyze').style.display = 'none';
+    document.getElementById('btnStart').style.display = 'block';
+    document.getElementById('btnStart').disabled = false;
+    document.getElementById('micVal').textContent = 'Released';
+    document.getElementById('micVal').className = 'idle';
+    
+    addLog('Session stopped', 'info');
+  }
+
+  function forceAnalyze() {
+    if (!sessionId) { addLog('No active session', 'err'); return; }
+    if (!screenStream || !screenStream.active) { addLog('No screen stream active', 'err'); return; }
+    addLog('Forcing screen analysis...', 'info');
+    
+    const backendUrl = document.getElementById('backendUrl').value;
+    const userId = document.getElementById('userId').value;
+    const sessionType = document.getElementById('sessionType').value;
+    
+    try {
+      const videoTrack = screenStream.getVideoTracks()[0];
+      const imageCapture = new ImageCapture(videoTrack);
+      imageCapture.grabFrame().then(bitmap => {
+        const canvas = document.createElement('canvas');
+        canvas.width = bitmap.width;
+        canvas.height = bitmap.height;
+        canvas.getContext('2d').drawImage(bitmap, 0, 0);
+        
+        canvas.toBlob(async (blob) => {
+          const formData = new FormData();
+          formData.append('image', blob, 'screen.jpg');
+          formData.append('session_id', sessionId);
+          formData.append('end_user_id', userId);
+          formData.append('session_type', sessionType);
+          
+          const resp = await fetch(`${backendUrl}/sessions/screen-frame`, {
+            method: 'POST', body: formData
+          });
+          const data = await resp.json();
+          if (data.drift_detected) {
+            addLog('🚨 DRIFT: ' + data.drift_description, 'err');
+          } else {
+            addLog('No drift detected', 'ok');
+          }
+        }, 'image/jpeg', 0.95);
+      });
+    } catch(e) {
+      addLog('Force analyze error: ' + e.message, 'err');
+    }
+  }
+</script>
+</body>
+</html>

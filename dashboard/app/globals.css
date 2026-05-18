@@ -1,0 +1,20 @@
+@import "tailwindcss";
+
+* { box-sizing: border-box; }
+
+body {
+  background: #0a0a0a;
+  color: #f0f0f0;
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.pulse { animation: pulse-dot 1.4s ease-in-out infinite; }
+
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: #111; }
+::-webkit-scrollbar-thumb { background: #333; border-radius: 4px; }

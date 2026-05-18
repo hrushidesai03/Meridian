@@ -118,24 +118,103 @@ Dashboard + email notification
 
 ---
 
-## Quick Start
+## VideoDB Primitives Used
 
-### Prerequisites
-- Python 3.10+
-- Node.js 18+
-- Free accounts: MongoDB Atlas, VideoDB, Groq
+Meridian leverages the following **VideoDB APIs and features** to achieve real-time monitoring:
 
-### Setup (25-35 minutes)
+### 1. **Capture Sessions** 
+- `create_capture_session()` — Initiates audio/screen capture with webhook callbacks
+- `generate_client_token()` — Embeds capture widget in frontend for browser-based capture
 
-See **[SETUP.md](./SETUP.md)** for complete step-by-step instructions including:
-- ✅ All software downloads
-- ✅ All terminal commands
-- ✅ API key creation (MongoDB, VideoDB, Groq)
-- ✅ Running the system (4 terminals)
-- ✅ Testing all features
-- ✅ Troubleshooting
+### 2. **Real-Time Streaming (RTStream)**
+- `get_rtstream()` — Retrieves live streaming object from VideoDB
+- `index_visuals()` — Indexes visual frames for OCR processing of screen captures
+- Real-time visual indexing for drift detection on code changes
+
+### 3. **Webhooks for Event-Driven Pipeline**
+- `capture.completed` — Triggered when recording session ends
+- `rtstream.ready` — Fired when RTStream is ready for indexing
+- `transcript.chunk` — Delivers transcription chunks for real-time processing
+- Webhooks trigger full AI pipeline: commitment extraction → decision checking → drift alerts
+
+### 4. **Video Timeline & Editing**
+- `Timeline`, `Track`, `Clip` — Builds "accountability receipt" video compilations
+- `Subtitle` — Adds annotations for violations (timestamp-tagged)
+- `generate()` — Renders final evidence video with violations highlighted
+
+### 5. **Collection Management**
+- `get_collection()` — Accesses stored RTStreams for retrieval and processing
+- Enables multi-session storage and historical replay
+
+**Why VideoDB?** Meridian watches *actual work* happening in real-time. VideoDB's RTStream + webhooks make it possible to capture, process, and react to real-time video frames without storing raw video files — we only extract and store the text that matters.
 
 ---
+
+## 🚀 How to Run Meridian
+
+### Quick Prerequisites
+- **Python 3.10+** — [Download](https://www.python.org/downloads/)
+- **Node.js 18+** — [Download](https://nodejs.org)
+- **Free API accounts:**
+  - [MongoDB Atlas](https://www.mongodb.com/cloud/atlas) (create cluster)
+  - [VideoDB Console](https://console.videodb.io) (get API key)
+  - [Groq Console](https://console.groq.com) (get API key)
+
+### Installation (4 Steps, ~5 minutes)
+
+**Step 1:** Clone and enter directory
+```bash
+git clone https://github.com/hrushidesai03/Meridian.git
+cd Meridian
+```
+
+**Step 2:** Create backend environment file
+```bash
+cd backend
+cp .env.example .env
+# Edit .env with your API keys:
+# - MONGODB_URL (from Atlas)
+# - VIDEODB_API_KEY (from VideoDB)
+# - GROQ_API_KEY (from Groq)
+# - CALLBACK_BASE_URL (see Step 4)
+```
+
+**Step 3:** Start backend in Terminal 1
+```bash
+python -m venv venv
+# Windows: venv\Scripts\activate
+# Mac/Linux: source venv/bin/activate
+pip install -r requirements.txt
+python main.py
+```
+
+**Step 4:** Start ngrok tunnel in Terminal 2 (for webhooks)
+```bash
+ngrok http 8000
+# Copy the "Forwarding" URL and paste into backend/.env as CALLBACK_BASE_URL
+# Restart main.py
+```
+
+**Step 5:** Start frontend in Terminal 3
+```bash
+cd dashboard
+npm install
+npm run dev
+# Opens at http://localhost:3000
+```
+
+**Step 6:** Open your browser
+- Dashboard: http://localhost:3000
+- Click "Start Session" to begin capturing
+- Speak commitments, then capture screen
+- Watch alerts appear in real-time
+
+### Full Setup Guide
+For detailed troubleshooting, feature walkthrough, and API reference: **[See SETUP.md](./SETUP.md)**
+
+---
+
+## Quick Start (Legacy)
 
 ## API Endpoints
 
@@ -208,14 +287,22 @@ Each user has a unique `end_user_id`. Sessions, commitments, decisions, and aler
 ## Built For
 
 **VideoDB Global Hackathon — May 2026**  
-Theme: *Give Agents Eyes and Ears*
+**Theme:** *Give Agents Eyes and Ears*
+
+### Why This Hackathon Submission?
+
+Meridian fully embodies the hackathon theme:
+- **Eyes 👀** — Screen capture + OCR detects code changes *as they happen*
+- **Ears 👂** — Audio capture + transcription extracts spoken commitments
+- **AI Agent 🤖** — CommitmentAgent + DriftDetector automatically monitors for violations
+- **Real-time Action ⚡** — VideoDB webhooks trigger instant alerts to team
+
+VideoDB is essential to the product — without RTStream and webhooks, this wouldn't work.
 
 ---
 
 ## Questions?
 
-See **[SETUP.md](./SETUP.md)** for:
-- Detailed setup instructions
-- Troubleshooting guide
-- Feature walkthrough
-- API reference
+**Setup issues?** See **[SETUP.md](./SETUP.md)** for detailed troubleshooting  
+**How do I use it?** Read the Feature Walkthrough section below in SETUP.md  
+**API reference?** Check **[SETUP.md](./SETUP.md)** API Endpoints section
